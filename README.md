@@ -46,7 +46,7 @@ overlapping booking impossible at the database level.
 
 <div align="center">
 
-**🔑 Seeded admin login** &nbsp;·&nbsp; `admin@bookit.local` &nbsp;/&nbsp; `admin123`
+**🔑 Seeded logins** &nbsp;·&nbsp; admin: `admin@bookit.local` / `admin123` &nbsp;·&nbsp; customer: `customer@bookit.local` / `customer123`
 
 </div>
 
@@ -100,26 +100,42 @@ overlapping booking impossible at the database level.
 ## ✨ Features
 
 ### 🧑‍💻 Customer side
-- Browse providers by category (**doctor / salon / turf**) with search.
-- Per-provider service catalog — duration, buffer time and price.
+- Browse providers by category (**doctor / salon / turf**) with search, **star ratings & reviews**.
+- Per-provider service catalog — duration, buffer time, price and **payment policy** (pay-at-venue / deposit / full prepay).
 - **Live slot availability** computed from weekly schedules, breaks, time-off and existing bookings.
-- Clean **3-step booking flow**: service → date & slot → details.
-- Instant on-screen confirmation **+ email with a booking code**.
-- Self-service **manage page**: look up by code + email, cancel with automatic slot release.
+- Clean **3-step booking flow**: service → date & slot → details, with **coupon codes** and **loyalty-point redemption**.
+- **Recurring series** — book weekly / biweekly runs (up to 12 sessions) with skip-and-report for unavailable dates.
+- **Customer accounts** (optional — guest checkout always works): booking history, favorites ❤, loyalty points; past guest bookings link automatically on signup.
+- Self-service **manage page**: look up by code + email, **reschedule to a new slot**, cancel with automatic slot release and **policy-based refunds**.
+- **Waitlist**: full day? Get an email the moment a cancellation frees a slot.
+- 🌙 **Dark mode** across the whole app.
+
+### 💳 Payments (simulated gateway, production-shaped)
+- Per-service policy: pay at venue, **deposit %**, or **full prepayment**.
+- `pending_payment` bookings **hold the slot at the database level** for a configurable window; expired holds release automatically (sweeper + inline expiry).
+- Built-in **MockPay** gateway — HMAC-signed checkout mirroring Razorpay's flow, so a real adapter drops in behind the same `PaymentProvider` interface. Zero external accounts needed.
+- **Refund policy engine** (full / fee / none by time-to-appointment), automatic refunds on cancellation, admin manual refunds, printable **receipts**.
+- **Coupons** (percent / fixed, windows, usage caps) and **loyalty points** (earn on completion, redeem up to 50% of price — race-safe).
+
+### 📬 Notifications
+- **Transactional outbox + dispatcher**: every email (confirmation, cancellation, reschedule, receipt, reminders, waitlist, series) is queued in Postgres and delivered with retries + exponential backoff — restarts lose nothing.
+- **Automated reminders** 24h and 1h before each appointment (voided/re-planned on cancel & reschedule).
+- **`.ics` calendar invites** attached to confirmations (REQUEST) and cancellations (CANCEL) with stable UIDs and SEQUENCE bumps.
+- Channel abstraction — SMS/WhatsApp adapters can plug in without touching the dispatcher.
 
 ### 🛠️ Admin panel
-- **Dashboard** — today's load, 7-day pipeline, monthly revenue, cancel rate, per-provider stats.
-- **Bookings table** — status / provider / date / text filters; complete, no-show and cancel actions (cancel emails the customer).
-- **Day view** — visual timeline of all bookings across providers.
-- **Provider management** — details and booking policies (slot step, minimum lead time, booking horizon).
-- **Weekly schedule editor** — multiple windows per day + recurring breaks.
-- **Time-off** — one-off closures for vacations and maintenance.
-- **Service CRUD** — duration, buffer and pricing.
+- **Dashboard + analytics** — booked value vs collected-online vs refunded, bookings & net revenue per day, weekday×hour **peak-hours heatmap**, top services, outcome rates, new-vs-returning customers (hand-rolled SVG, light/dark aware).
+- **Bookings table** — filters, complete / no-show / cancel actions, **CSV export** (BOM + injection-safe).
+- **Day view & week view** — visual timelines with click-through booking details.
+- **Customer CRM** — searchable customer list with lifetime spend, no-show counts, loyalty balance, full history and private notes.
+- **Payments & coupons** — payment ledger with refund actions; coupon CRUD.
+- **Reviews moderation** — hide/unhide customer reviews.
+- **Waitlist management**, provider/schedule/time-off/service CRUD as before.
 
 ### ⚙️ Platform
-- **JWT-authenticated** admin API; **Zod** request validation everywhere.
+- **JWT-authenticated** admin + customer APIs (separate token kinds); **Zod** request validation everywhere.
 - Email via **SMTP** (nodemailer); with no SMTP config, rendered emails land in `server/outbox/*.html` — so the flow works end-to-end with zero setup.
-- **Booking audit trail** (`booking_events`): created, status changes, emails sent.
+- **Booking audit trail** (`booking_events`): created, status changes, payments, refunds, reschedules, emails sent.
 
 ---
 
@@ -138,12 +154,14 @@ between concurrent requests is safe:
 CONSTRAINT bookings_no_overlap EXCLUDE USING gist (
   provider_id WITH =,
   tstzrange(starts_at, ends_at) WITH &&
-) WHERE (status IN ('confirmed', 'completed'))
+) WHERE (status IN ('pending_payment', 'confirmed', 'completed'))
 ```
 
 The partial `WHERE` means cancelled / no-show bookings automatically free their
-slot. A conflicting insert fails with SQLSTATE `23P01`, which the API maps to
-**`409 Conflict`**, and the UI refreshes the slot grid.
+slot — and a booking that's **being paid for** (`pending_payment`) still holds
+its slot until it's captured or the hold expires. A conflicting insert fails
+with SQLSTATE `23P01`, which the API maps to **`409 Conflict`**, and the UI
+refreshes the slot grid.
 
 > 📐 The full request-to-database walkthrough lives in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
 
@@ -267,12 +285,9 @@ BookIt-Appointment-Booking-System/
 
 ## 🔭 Future Improvements
 
-- [ ] **Customer accounts** — booking history and saved details behind login
-- [ ] **Online payments** — deposits / prepay via Stripe with refund-on-cancel
-- [ ] **SMS & calendar** — reminders + `.ics` / Google Calendar invites
-- [ ] **Recurring appointments** — weekly / monthly repeat bookings
+- [ ] **Real payment gateway** — the `PaymentProvider` interface is Razorpay-shaped; add `razorpay.ts` + a webhook route and set `PAYMENT_PROVIDER=razorpay`
+- [ ] **SMS / WhatsApp reminders** — register a new channel in the notification dispatcher
 - [ ] **Provider self-service portal** — providers manage their own schedules
-- [ ] **Waitlist & auto-fill** — notify the next customer when a slot frees up
 - [ ] **Test suite** — unit tests for the slot engine + integration tests on the conflict layers
 
 ---

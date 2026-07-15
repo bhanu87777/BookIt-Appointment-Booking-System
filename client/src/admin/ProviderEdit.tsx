@@ -89,6 +89,7 @@ function DetailsPanel({ provider, onSave }: { provider: Provider; onSave: (p: Pa
         <label>Slot step (min)<input className="input" type="number" min={5} max={120} value={p.slot_step_min} onChange={(e) => setP({ ...p, slot_step_min: +e.target.value })} /></label>
         <label>Min lead time (min)<input className="input" type="number" min={0} value={p.min_lead_min} onChange={(e) => setP({ ...p, min_lead_min: +e.target.value })} /></label>
         <label>Booking horizon (days)<input className="input" type="number" min={1} max={365} value={p.booking_horizon_days} onChange={(e) => setP({ ...p, booking_horizon_days: +e.target.value })} /></label>
+        <label>Reschedule cutoff (min)<input className="input" type="number" min={0} value={p.reschedule_cutoff_min ?? 120} onChange={(e) => setP({ ...p, reschedule_cutoff_min: +e.target.value })} /></label>
         <label className="span2">Bio<textarea className="input" rows={2} value={p.bio} onChange={(e) => setP({ ...p, bio: e.target.value })} /></label>
         <label className="check-label">
           <input type="checkbox" checked={p.active} onChange={(e) => setP({ ...p, active: e.target.checked })} /> Active (visible & bookable)
@@ -97,7 +98,8 @@ function DetailsPanel({ provider, onSave }: { provider: Provider; onSave: (p: Pa
       <button className="btn btn-primary" onClick={() => onSave({
         business_type: p.business_type, name: p.name, title: p.title, bio: p.bio, emoji: p.emoji,
         color: p.color, slot_step_min: p.slot_step_min, min_lead_min: p.min_lead_min,
-        booking_horizon_days: p.booking_horizon_days, active: p.active,
+        booking_horizon_days: p.booking_horizon_days, reschedule_cutoff_min: p.reschedule_cutoff_min ?? 120,
+        active: p.active,
       })}>Save details</button>
     </section>
   );
@@ -107,14 +109,19 @@ function DetailsPanel({ provider, onSave }: { provider: Provider; onSave: (p: Pa
 function ServicesPanel({ provider, onChanged, onError }: {
   provider: Provider; onChanged: () => void; onError: (msg: string) => void;
 }) {
-  const empty = { name: '', description: '', duration_min: 30, buffer_min: 0, price_cents: 0, active: true };
+  const empty = {
+    name: '', description: '', duration_min: 30, buffer_min: 0, price_cents: 0,
+    payment_policy: 'none' as const, deposit_pct: 50, active: true,
+  };
   const [editing, setEditing] = useState<(Service & { isNew?: boolean }) | null>(null);
 
   async function save() {
     if (!editing) return;
     const body = {
       name: editing.name, description: editing.description, duration_min: editing.duration_min,
-      buffer_min: editing.buffer_min, price_cents: editing.price_cents, active: editing.active ?? true,
+      buffer_min: editing.buffer_min, price_cents: editing.price_cents,
+      payment_policy: editing.payment_policy ?? 'none', deposit_pct: editing.deposit_pct ?? 50,
+      active: editing.active ?? true,
     };
     try {
       if (editing.isNew) await api.post(`/api/admin/providers/${provider.id}/services`, body);
@@ -133,7 +140,7 @@ function ServicesPanel({ provider, onChanged, onError }: {
         <button className="btn btn-ghost btn-sm" onClick={() => setEditing({ ...(empty as Service), id: 0, isNew: true })}>+ Add service</button>
       </div>
       <table className="table">
-        <thead><tr><th>Service</th><th>Duration</th><th>Buffer</th><th>Price</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Service</th><th>Duration</th><th>Buffer</th><th>Price</th><th>Payment</th><th>Status</th><th></th></tr></thead>
         <tbody>
           {(provider.services ?? []).map((s) => (
             <tr key={s.id}>
@@ -144,6 +151,9 @@ function ServicesPanel({ provider, onChanged, onError }: {
               <td>{s.duration_min} min</td>
               <td>{s.buffer_min} min</td>
               <td>{money(s.price_cents)}</td>
+              <td className="small">
+                {s.payment_policy === 'full' ? 'Prepaid' : s.payment_policy === 'deposit' ? `${s.deposit_pct}% deposit` : 'At venue'}
+              </td>
               <td><span className={`badge ${s.active ? 'badge-confirmed' : 'badge-cancelled'}`}>{s.active ? 'Active' : 'Hidden'}</span></td>
               <td><button className="btn btn-ghost btn-sm" onClick={() => setEditing({ ...s })}>Edit</button></td>
             </tr>
@@ -163,6 +173,20 @@ function ServicesPanel({ provider, onChanged, onError }: {
               <input className="input" type="number" min={0} value={editing.price_cents / 100}
                 onChange={(e) => setEditing({ ...editing, price_cents: Math.round(+e.target.value * 100) })} />
             </label>
+            <label>Payment
+              <select className="input" value={editing.payment_policy ?? 'none'}
+                onChange={(e) => setEditing({ ...editing, payment_policy: e.target.value as Service['payment_policy'] })}>
+                <option value="none">Pay at venue</option>
+                <option value="deposit">Deposit online</option>
+                <option value="full">Full prepayment</option>
+              </select>
+            </label>
+            {editing.payment_policy === 'deposit' && (
+              <label>Deposit %
+                <input className="input" type="number" min={1} max={100} value={editing.deposit_pct ?? 50}
+                  onChange={(e) => setEditing({ ...editing, deposit_pct: +e.target.value })} />
+              </label>
+            )}
             <label className="check-label">
               <input type="checkbox" checked={editing.active ?? true} onChange={(e) => setEditing({ ...editing, active: e.target.checked })} /> Active
             </label>

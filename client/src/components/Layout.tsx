@@ -1,6 +1,9 @@
 import { Link, NavLink, Outlet } from 'react-router-dom';
+import ThemeToggle from './ThemeToggle';
+import { useCustomer } from '../customer/auth';
 
 export default function Layout() {
+  const user = useCustomer();
   return (
     <div className="site">
       <header className="site-header">
@@ -13,6 +16,12 @@ export default function Layout() {
             <NavLink to="/browse/salon">Salons</NavLink>
             <NavLink to="/browse/turf">Turfs</NavLink>
             <NavLink to="/manage" className="nav-pill">Manage booking</NavLink>
+            {user ? (
+              <NavLink to="/account" className="nav-pill">👤 {user.name.split(' ')[0]}</NavLink>
+            ) : (
+              <NavLink to="/account/login" className="nav-pill">Sign in</NavLink>
+            )}
+            <ThemeToggle />
           </nav>
         </div>
       </header>

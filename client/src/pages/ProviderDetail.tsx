@@ -1,57 +1,100 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api';
-import { addDays, fmtTime, hhmm, money, toDateStr, WEEKDAYS, WEEKDAYS_SHORT } from '../format';
+import { fmtTime, hhmm, money, WEEKDAYS, WEEKDAYS_SHORT } from '../format';
 import type { Booking, Provider, Service, Slot } from '../types';
+import { useCustomer } from '../customer/auth';
+import { useFavorites } from '../customer/favorites';
+import SlotPicker from '../components/SlotPicker';
+import WaitlistForm from '../components/WaitlistForm';
+import { RatingBadge, Stars } from '../components/Stars';
+
+interface Review {
+  rating: number;
+  comment: string;
+  created_at: string;
+  customer_name: string;
+  service_name: string;
+}
 
 export default function ProviderDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const user = useCustomer();
 
   const [provider, setProvider] = useState<Provider | null>(null);
   const [service, setService] = useState<Service | null>(null);
-  const [date, setDate] = useState(toDateStr(new Date()));
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [slotsLoading, setSlotsLoading] = useState(false);
   const [slot, setSlot] = useState<Slot | null>(null);
-  const [form, setForm] = useState({ name: '', email: '', phone: '', notes: '' });
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [form, setForm] = useState({ name: user?.name ?? '', email: user?.email ?? '', phone: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const fav = useFavorites();
+
+  const [couponInput, setCouponInput] = useState('');
+  const [coupon, setCoupon] = useState<{ code: string; discountCents: number } | null>(null);
+  const [couponMsg, setCouponMsg] = useState('');
+  const [pointsBalance, setPointsBalance] = useState(0);
+  const [redeemPoints, setRedeemPoints] = useState(0);
+  const [repeat, setRepeat] = useState<'once' | 'weekly' | 'biweekly'>('once');
+  const [occurrences, setOccurrences] = useState(4);
+
+  useEffect(() => {
+    if (!user) return;
+    api.get<{ points_balance: number }>('/api/customer/me')
+      .then((me) => setPointsBalance(me.points_balance))
+      .catch(() => {});
+  }, [user]);
+
+  const [params] = useSearchParams();
 
   useEffect(() => {
     api.get<Provider>(`/api/providers/${id}`).then((p) => {
       setProvider(p);
-      if (p.services?.length === 1) setService(p.services[0]);
+      // deep links (waitlist emails) preselect the service
+      const wanted = Number(params.get('serviceId'));
+      const preselect = wanted ? p.services?.find((s) => s.id === wanted) : undefined;
+      if (preselect) setService(preselect);
+      else if (p.services?.length === 1) setService(p.services[0]);
     });
+    api.get<Review[]>(`/api/providers/${id}/reviews`).then(setReviews).catch(() => setReviews([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  useEffect(() => {
-    if (!provider || !service) return;
-    setSlotsLoading(true);
-    setSlot(null);
-    api.get<{ slots: Slot[] }>(`/api/providers/${provider.id}/slots?serviceId=${service.id}&date=${date}`)
-      .then((r) => setSlots(r.slots))
-      .catch(() => setSlots([]))
-      .finally(() => setSlotsLoading(false));
-  }, [provider, service, date]);
+  // pricing preview (server recomputes authoritatively inside the booking txn)
+  const couponDiscount = coupon?.discountCents ?? 0;
+  const pointsDiscount = redeemPoints * 100;
+  const netCents = service ? Math.max(0, service.price_cents - couponDiscount - pointsDiscount) : 0;
+  const maxRedeem = service
+    ? Math.max(0, Math.min(pointsBalance, Math.floor((service.price_cents - couponDiscount) * 0.5 / 100)))
+    : 0;
+  const dueNowCents = !service || service.payment_policy === 'none' || !service.payment_policy
+    ? 0
+    : service.payment_policy === 'full'
+      ? netCents
+      : Math.max(Math.ceil((netCents * (service.deposit_pct ?? 50)) / 100), 100);
 
-  const days = useMemo(() => {
-    if (!provider) return [];
-    const openWeekdays = new Set((provider.schedules ?? []).map((s) => s.weekday));
-    return Array.from({ length: Math.min(provider.booking_horizon_days, 14) }, (_, i) => {
-      const d = addDays(new Date(), i);
-      return { date: d, str: toDateStr(d), open: openWeekdays.has(d.getDay()) };
-    });
-  }, [provider]);
-
-  const grouped = useMemo(() => {
-    const g: Record<string, Slot[]> = { Morning: [], Afternoon: [], Evening: [] };
-    for (const s of slots) {
-      const h = new Date(s.start).getHours();
-      (h < 12 ? g.Morning : h < 17 ? g.Afternoon : g.Evening).push(s);
+  async function applyCoupon() {
+    if (!service || !couponInput.trim()) return;
+    setCouponMsg('');
+    try {
+      const r = await api.post<{ valid: boolean; code?: string; discountCents?: number; reason?: string }>(
+        '/api/coupons/validate',
+        { code: couponInput.trim(), serviceId: service.id }
+      );
+      if (r.valid) {
+        setCoupon({ code: r.code!, discountCents: r.discountCents! });
+        setCouponMsg(`Coupon ${r.code} applied — you save ${money(r.discountCents!)}`);
+      } else {
+        setCoupon(null);
+        setCouponMsg(r.reason ?? 'Invalid coupon');
+      }
+    } catch (err) {
+      setCoupon(null);
+      setCouponMsg(err instanceof Error ? err.message : 'Could not validate coupon');
     }
-    return g;
-  }, [slots]);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -59,22 +102,41 @@ export default function ProviderDetail() {
     setSubmitting(true);
     setError('');
     try {
+      if (repeat !== 'once') {
+        const result = await api.post<{ series: { code: string }; booked: Booking[]; skipped: { start: string; reason: string }[] }>(
+          '/api/bookings/series',
+          {
+            providerId: provider.id,
+            serviceId: service.id,
+            start: slot.start,
+            customer: { name: form.name, email: form.email, phone: form.phone || undefined },
+            notes: form.notes || undefined,
+            frequency: repeat,
+            occurrences,
+          }
+        );
+        navigate('/confirmation', { state: { booking: result.booked[0], series: result } });
+        return;
+      }
       const booking = await api.post<Booking>('/api/bookings', {
         providerId: provider.id,
         serviceId: service.id,
         start: slot.start,
         customer: { name: form.name, email: form.email, phone: form.phone || undefined },
         notes: form.notes || undefined,
+        couponCode: coupon?.code,
+        redeemPoints: redeemPoints > 0 ? redeemPoints : undefined,
       });
-      navigate('/confirmation', { state: { booking } });
+      if (booking.payment) {
+        navigate(`/checkout/${booking.code}`, { state: { booking } });
+      } else {
+        navigate('/confirmation', { state: { booking } });
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setError(err.message + ' The slot list has been refreshed.');
         setSlot(null);
-        const r = await api.get<{ slots: Slot[] }>(
-          `/api/providers/${provider.id}/slots?serviceId=${service.id}&date=${date}`
-        );
-        setSlots(r.slots);
+        setRefreshKey((k) => k + 1);
       } else {
         setError(err instanceof Error ? err.message : 'Booking failed');
       }
@@ -89,9 +151,18 @@ export default function ProviderDetail() {
     <div className="container detail-layout">
       {/* ---- provider card ---- */}
       <aside className="detail-side">
+        {fav.loggedIn && (
+          <button
+            className={`fav-btn ${fav.ids.has(provider.id) ? 'on' : ''}`}
+            title={fav.ids.has(provider.id) ? 'Remove from favorites' : 'Add to favorites'}
+            onClick={() => fav.toggle(provider.id)}
+          >
+            {fav.ids.has(provider.id) ? '♥' : '♡'}
+          </button>
+        )}
         <div className="provider-avatar lg" style={{ background: provider.color }}>{provider.emoji}</div>
         <h1>{provider.name}</h1>
-        <p className="provider-title">{provider.title}</p>
+        <p className="provider-title">{provider.title} <RatingBadge avg={provider.avg_rating} count={provider.review_count} /></p>
         <p className="provider-bio">{provider.bio}</p>
         <div className="hours-box">
           <h3>Weekly hours</h3>
@@ -138,45 +209,17 @@ export default function ProviderDetail() {
         {service && (
           <div className="step-card">
             <h2><span className="step-num">2</span> Pick a date &amp; time</h2>
-            <div className="date-strip">
-              {days.map((d) => (
-                <button
-                  key={d.str}
-                  className={`date-pill ${date === d.str ? 'selected' : ''} ${!d.open ? 'closed' : ''}`}
-                  onClick={() => setDate(d.str)}
-                >
-                  <span className="date-pill-day">{WEEKDAYS_SHORT[d.date.getDay()]}</span>
-                  <span className="date-pill-num">{d.date.getDate()}</span>
-                  <span className="date-pill-month">
-                    {d.date.toLocaleString('en', { month: 'short' })}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {slotsLoading && <p className="muted">Checking availability…</p>}
-            {!slotsLoading && slots.length === 0 && (
-              <p className="muted empty-slots">No slots available on this day — try another date.</p>
-            )}
-            {!slotsLoading &&
-              Object.entries(grouped).map(([label, list]) =>
-                list.length ? (
-                  <div key={label} className="slot-group">
-                    <h4>{label}</h4>
-                    <div className="slot-grid">
-                      {list.map((s) => (
-                        <button
-                          key={s.start}
-                          className={`slot-btn ${slot?.start === s.start ? 'selected' : ''}`}
-                          onClick={() => setSlot(s)}
-                        >
-                          {fmtTime(s.start)}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null
+            <SlotPicker
+              provider={provider}
+              serviceId={service.id}
+              slot={slot}
+              onSelect={setSlot}
+              refreshKey={refreshKey}
+              initialDate={params.get('date') ?? undefined}
+              renderEmpty={(date) => (
+                <WaitlistForm providerId={provider.id} serviceId={service.id} date={date} />
               )}
+            />
           </div>
         )}
 
@@ -185,7 +228,13 @@ export default function ProviderDetail() {
             <h2><span className="step-num">3</span> Your details</h2>
             <div className="summary-bar">
               {service.name} · {new Date(slot.start).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
-              {' '}at {fmtTime(slot.start)} · {money(service.price_cents)}
+              {' '}at {fmtTime(slot.start)} · {money(netCents)}
+              {(couponDiscount > 0 || pointsDiscount > 0) && (
+                <s className="summary-strike">{money(service.price_cents)}</s>
+              )}
+              {dueNowCents > 0 && dueNowCents < netCents && (
+                <span className="summary-due"> · pay {money(dueNowCents)} now</span>
+              )}
             </div>
             <form onSubmit={submit} className="booking-form">
               <div className="form-row">
@@ -212,11 +261,88 @@ export default function ProviderDetail() {
                     onChange={(e) => setForm({ ...form, notes: e.target.value })} />
                 </label>
               </div>
+              {(service.payment_policy ?? 'none') === 'none' && (
+                <div className="form-row">
+                  <label>
+                    Repeat
+                    <select className="input" value={repeat}
+                      onChange={(e) => setRepeat(e.target.value as typeof repeat)}>
+                      <option value="once">Just once</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="biweekly">Every 2 weeks</option>
+                    </select>
+                  </label>
+                  {repeat !== 'once' && (
+                    <label>
+                      Number of sessions (2–12)
+                      <input className="input" type="number" min={2} max={12} value={occurrences}
+                        onChange={(e) => setOccurrences(Math.max(2, Math.min(12, +e.target.value || 2)))} />
+                    </label>
+                  )}
+                </div>
+              )}
+              {repeat !== 'once' && (
+                <p className="muted small">
+                  Sessions repeat at the same time {repeat === 'weekly' ? 'every week' : 'every two weeks'}.
+                  Dates that are unavailable or outside the booking window are skipped and reported.
+                </p>
+              )}
+              <div className="form-row">
+                <label>
+                  Coupon code
+                  <div className="coupon-row">
+                    <input className="input" value={couponInput} placeholder="e.g. WELCOME10"
+                      onChange={(e) => setCouponInput(e.target.value)} />
+                    <button type="button" className="btn btn-ghost" onClick={applyCoupon}>Apply</button>
+                  </div>
+                  {couponMsg && <span className={`small ${coupon ? 'coupon-ok' : 'coupon-bad'}`}>{couponMsg}</span>}
+                </label>
+                {user && pointsBalance > 0 && (
+                  <label>
+                    Redeem points (you have {pointsBalance} = {money(pointsBalance * 100)})
+                    <input className="input" type="number" min={0} max={maxRedeem} value={redeemPoints || ''}
+                      placeholder={maxRedeem > 0 ? `up to ${maxRedeem}` : 'not available'}
+                      disabled={maxRedeem === 0}
+                      onChange={(e) => setRedeemPoints(Math.max(0, Math.min(maxRedeem, +e.target.value || 0)))} />
+                  </label>
+                )}
+              </div>
               {error && <p className="error-box">{error}</p>}
               <button className="btn btn-primary btn-lg" disabled={submitting}>
-                {submitting ? 'Booking…' : `Confirm booking — ${money(service.price_cents)}`}
+                {submitting
+                  ? 'Booking…'
+                  : repeat !== 'once'
+                    ? `Book ${occurrences} sessions — ${money(service.price_cents)} each`
+                    : dueNowCents > 0
+                      ? `Pay ${money(dueNowCents)} & book`
+                      : `Confirm booking — ${money(netCents)}`}
               </button>
+              {dueNowCents > 0 && dueNowCents < netCents && (
+                <p className="muted small">
+                  {money(dueNowCents)} deposit now · {money(netCents - dueNowCents)} at the venue.
+                </p>
+              )}
             </form>
+          </div>
+        )}
+
+        {reviews.length > 0 && (
+          <div className="step-card">
+            <h2>⭐ Reviews</h2>
+            <div className="review-list">
+              {reviews.map((r, i) => (
+                <div key={i} className="review-item">
+                  <div className="review-item-head">
+                    <Stars value={r.rating} />
+                    <strong>{r.customer_name}</strong>
+                    <span className="muted small">
+                      {r.service_name} · {new Date(r.created_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}
+                    </span>
+                  </div>
+                  {r.comment && <p className="review-comment">{r.comment}</p>}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </section>

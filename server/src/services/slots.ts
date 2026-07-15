@@ -40,7 +40,8 @@ export async function computeSlots(
   db: pg.Pool | pg.PoolClient,
   providerId: number,
   serviceId: number,
-  date: string // YYYY-MM-DD
+  date: string, // YYYY-MM-DD
+  excludeBookingId?: number // reschedule: the booking's own slot must not block the move
 ): Promise<{ slots: Slot[]; provider: any; service: any }> {
   const { rows: [provider] } = await db.query(
     'SELECT * FROM providers WHERE id = $1 AND active', [providerId]
@@ -76,10 +77,13 @@ export async function computeSlots(
       [providerId, dayStart, dayEnd]
     ),
     db.query(
+      // status list MUST match the bookings_no_overlap constraint's WHERE
+      // clause exactly — pending_payment holds its slot while being paid for
       `SELECT starts_at, ends_at FROM bookings
-       WHERE provider_id = $1 AND status IN ('confirmed','completed')
-         AND starts_at < $3 AND ends_at > $2`,
-      [providerId, dayStart, dayEnd]
+       WHERE provider_id = $1 AND status IN ('pending_payment','confirmed','completed')
+         AND starts_at < $3 AND ends_at > $2
+         AND ($4::int IS NULL OR id <> $4)`,
+      [providerId, dayStart, dayEnd, excludeBookingId ?? null]
     ),
   ]);
 

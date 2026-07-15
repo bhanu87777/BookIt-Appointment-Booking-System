@@ -1,5 +1,5 @@
 export type BusinessType = 'doctor' | 'salon' | 'turf';
-export type BookingStatus = 'confirmed' | 'completed' | 'cancelled' | 'no_show';
+export type BookingStatus = 'pending_payment' | 'confirmed' | 'completed' | 'cancelled' | 'no_show';
 
 export interface BusinessTypeInfo {
   key: BusinessType;
@@ -16,7 +16,53 @@ export interface Service {
   duration_min: number;
   buffer_min: number;
   price_cents: number;
+  payment_policy?: 'none' | 'deposit' | 'full';
+  deposit_pct?: number;
   active?: boolean;
+}
+
+export interface PaymentInfo {
+  required: true;
+  orderId: string;
+  amountCents: number;
+  currency: string;
+  expiresAt: string;
+  provider: 'mock' | 'razorpay';
+  keyId?: string;
+}
+
+export interface Payment {
+  id: number;
+  booking_id: number;
+  provider: string;
+  order_id: string;
+  payment_id: string | null;
+  amount_cents: number;
+  currency: string;
+  status: 'created' | 'captured' | 'partially_refunded' | 'refunded' | 'failed';
+  method: string;
+  error: string;
+  created_at: string;
+  refunds?: { id: number; amount_cents: number; reason: string; status: string; created_at: string }[];
+}
+
+export interface Coupon {
+  id: number;
+  code: string;
+  type: 'percent' | 'fixed';
+  value: number;
+  max_uses: number | null;
+  used_count: number;
+  min_amount_cents: number;
+  valid_from: string | null;
+  valid_to: string | null;
+  active: boolean;
+}
+
+export interface RefundInfo {
+  amountCents: number;
+  policy: 'full' | 'partial' | 'none';
+  paidCents?: number;
 }
 
 export interface ScheduleWindow {
@@ -48,7 +94,10 @@ export interface Provider {
   slot_step_min: number;
   min_lead_min: number;
   booking_horizon_days: number;
+  reschedule_cutoff_min?: number;
   active: boolean;
+  avg_rating?: string | null;
+  review_count?: string;
   services?: Service[];
   schedules?: ScheduleWindow[];
   breaks?: BreakWindow[];
@@ -66,6 +115,7 @@ export interface Booking {
   code: string;
   provider_id: number;
   service_id: number;
+  customer_id?: number;
   starts_at: string;
   ends_at: string;
   status: BookingStatus;
@@ -82,12 +132,26 @@ export interface Booking {
   business_type: BusinessType;
   emoji: string;
   color: string;
+  reschedule_cutoff_min?: number;
+  reviewed?: boolean;
+  discount_cents?: number;
+  coupon_code?: string | null;
+  points_redeemed?: number;
+  amount_due_cents?: number;
+  expires_at?: string | null;
+  series_id?: number | null;
+  series_code?: string | null;
+  payment?: PaymentInfo | null;
+  refund?: RefundInfo | null;
+  payments?: Payment[];
 }
 
 export interface AdminStats {
   today_confirmed: string;
   next7_confirmed: string;
   month_revenue_cents: string;
+  month_collected_cents?: string;
+  month_refunded_cents?: string;
   cancelled_30d: string;
   created_30d: string;
   active_providers: string;

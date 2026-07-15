@@ -27,6 +27,7 @@ export const addDays = (d: Date, n: number) => {
 export const hhmm = (t: string) => t.slice(0, 5);
 
 export const STATUS_LABELS: Record<string, string> = {
+  pending_payment: 'Awaiting payment',
   confirmed: 'Confirmed',
   completed: 'Completed',
   cancelled: 'Cancelled',

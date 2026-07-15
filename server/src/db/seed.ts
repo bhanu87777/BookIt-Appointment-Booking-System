@@ -7,7 +7,9 @@ async function main() {
   try {
     await client.query('BEGIN');
     await client.query(
-      `TRUNCATE booking_events, bookings, customers, time_off, breaks, schedules, services, providers, users
+      `TRUNCATE notifications, waitlist, reviews, loyalty_ledger, favorites, refunds, payments,
+                coupons, booking_events, bookings, booking_series, customers, time_off, breaks,
+                schedules, services, providers, users
        RESTART IDENTITY CASCADE`
     );
 
@@ -132,6 +134,19 @@ async function main() {
       }
     }
 
+    // ---- payment policies: turf slots are prepaid, FadeLab takes deposits --
+    await client.query(`UPDATE services s SET payment_policy = 'full'
+                        FROM providers p WHERE p.id = s.provider_id AND p.business_type = 'turf'`);
+    await client.query(`UPDATE services s SET payment_policy = 'deposit', deposit_pct = 25
+                        FROM providers p WHERE p.id = s.provider_id AND p.name LIKE '%FadeLab%'`);
+
+    // ---- demo coupons -----------------------------------------------------
+    await client.query(
+      `INSERT INTO coupons (code, type, value, min_amount_cents, max_uses) VALUES
+       ('WELCOME10', 'percent', 10, 50000, NULL),
+       ('FLAT200', 'fixed', 20000, 100000, 50)`
+    );
+
     // ---- sample customers + bookings (tomorrow, aligned to schedules) -----
     const customers = [
       ['Rohan Iyer', 'rohan@example.com', '+91 98765 11111'],
@@ -146,6 +161,15 @@ async function main() {
       );
       customerIds.push(c.id);
     }
+
+    // demo customer ACCOUNT so accounts/loyalty/favorites demo out of the box
+    const customerHash = await bcrypt.hash('customer123', 10);
+    const { rows: [demoCustomer] } = await client.query(
+      `INSERT INTO customers (name, email, phone, password_hash)
+       VALUES ('Demo Customer', 'customer@bookit.local', '+91 98765 00000', $1) RETURNING id`,
+      [customerHash]
+    );
+    customerIds.push(demoCustomer.id);
 
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -174,8 +198,57 @@ async function main() {
       );
     }
 
+    // ---- completed history + reviews + loyalty (past dates) ---------------
+    const past = (daysAgo: number, h: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() - daysAgo);
+      d.setHours(h, 0, 0, 0);
+      return d;
+    };
+    // providerIdx, serviceIdx, daysAgo, hour, customerIdx, durationMin, rating, comment
+    const history: [number, number, number, number, number, number, number, string][] = [
+      [0, 0, 12, 10, 3, 30, 5, 'Dr. Rao took her time and explained everything clearly. Highly recommend.'],
+      [2, 0, 8, 11, 3, 45, 4, 'Lovely haircut, though I had to wait a few minutes past my slot.'],
+      [4, 0, 5, 19, 0, 60, 5, 'Great turf, floodlights and grass in top shape!'],
+      [3, 0, 3, 12, 1, 40, 4, 'Sharp fade, easy booking.'],
+      [1, 0, 2, 15, 2, 20, 5, 'Quick, professional consultation.'],
+    ];
+    for (const [pi, si, daysAgo, h, ci, dur, rating, comment] of history) {
+      const start = past(daysAgo, h);
+      const { rows: [b] } = await client.query(
+        `INSERT INTO bookings (code, provider_id, service_id, customer_id, starts_at, ends_at, status, price_cents)
+         VALUES ($1,$2,$3,$4,$5,$6,'completed',
+                 (SELECT price_cents FROM services WHERE id = $3))
+         RETURNING id, code, customer_id, provider_id, price_cents`,
+        [code(), pi + 1, serviceIds[pi][si], customerIds[ci], start, addMin(start, dur)]
+      );
+      await client.query(
+        `INSERT INTO reviews (booking_id, provider_id, customer_id, rating, comment)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [b.id, b.provider_id, b.customer_id, rating, comment]
+      );
+      const points = Math.floor(b.price_cents / 1000);
+      if (points > 0) {
+        await client.query(
+          `INSERT INTO loyalty_ledger (customer_id, booking_id, points, reason, detail)
+           VALUES ($1,$2,$3,'earned_completed',$4)`,
+          [b.customer_id, b.id, points, `Completed ${b.code}`]
+        );
+      }
+    }
+
+    // demo customer favorites
+    await client.query(
+      `INSERT INTO favorites (customer_id, provider_id) VALUES ($1, 1), ($1, 5)`,
+      [demoCustomer.id]
+    );
+
     await client.query('COMMIT');
-    console.log('✔ Seeded: 1 admin (admin@bookit.local / admin123), 6 providers, services, schedules, 3 sample bookings.');
+    console.log(
+      '✔ Seeded: admin (admin@bookit.local / admin123), demo customer (customer@bookit.local / customer123),\n' +
+      '  6 providers with payment policies, coupons WELCOME10 & FLAT200, upcoming + completed bookings,\n' +
+      '  reviews, loyalty points and favorites.'
+    );
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

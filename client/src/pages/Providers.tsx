@@ -3,6 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { money } from '../format';
 import type { Provider } from '../types';
+import { RatingBadge } from '../components/Stars';
+import { useFavorites } from '../customer/favorites';
 
 const TYPE_LABELS: Record<string, string> = {
   doctor: 'Doctors & Clinics',
@@ -15,6 +17,7 @@ export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const fav = useFavorites();
 
   useEffect(() => {
     setLoading(true);
@@ -47,9 +50,21 @@ export default function Providers() {
       <div className="provider-grid">
         {filtered.map((p) => (
           <Link key={p.id} to={`/provider/${p.id}`} className="provider-card">
+            {fav.loggedIn && (
+              <button
+                className={`fav-btn ${fav.ids.has(p.id) ? 'on' : ''}`}
+                title={fav.ids.has(p.id) ? 'Remove from favorites' : 'Add to favorites'}
+                onClick={(e) => {
+                  e.preventDefault();
+                  fav.toggle(p.id);
+                }}
+              >
+                {fav.ids.has(p.id) ? '♥' : '♡'}
+              </button>
+            )}
             <div className="provider-avatar" style={{ background: p.color }}>{p.emoji}</div>
             <div className="provider-info">
-              <h2>{p.name}</h2>
+              <h2>{p.name} <RatingBadge avg={p.avg_rating} count={p.review_count} /></h2>
               <p className="provider-title">{p.title}</p>
               <p className="provider-bio">{p.bio}</p>
               <div className="chip-row">

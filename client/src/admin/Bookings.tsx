@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../api';
+import { Link, useSearchParams } from 'react-router-dom';
+import { api, downloadFile } from '../api';
 import { fmtDateTime, fmtTime, money, STATUS_LABELS } from '../format';
 import type { Booking, Provider } from '../types';
 
 export default function AdminBookings() {
+  const [params] = useSearchParams();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [filters, setFilters] = useState({ status: '', providerId: '', date: '', search: '' });
+  const [filters, setFilters] = useState({
+    status: '', providerId: '', date: '', search: params.get('search') ?? '',
+  });
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(() => {
     const q = new URLSearchParams();
@@ -37,9 +42,31 @@ export default function AdminBookings() {
     }
   }
 
+  async function exportCsv() {
+    setExporting(true);
+    setError('');
+    try {
+      const q = new URLSearchParams();
+      if (filters.status) q.set('status', filters.status);
+      if (filters.providerId) q.set('providerId', filters.providerId);
+      if (filters.date) q.set('date', filters.date);
+      if (filters.search) q.set('search', filters.search);
+      await downloadFile(`/api/admin/bookings.csv?${q}`, `bookings-${new Date().toISOString().slice(0, 10)}.csv`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div>
-      <h1 className="admin-title">Bookings</h1>
+      <div className="admin-title-row">
+        <h1 className="admin-title">Bookings</h1>
+        <button className="btn btn-ghost btn-sm" disabled={exporting} onClick={exportCsv}>
+          {exporting ? 'Exporting…' : '⬇️ Export CSV'}
+        </button>
+      </div>
       <div className="filter-bar">
         <input className="input" placeholder="Search code / name / email"
           value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
@@ -71,7 +98,7 @@ export default function AdminBookings() {
               <tr key={b.id} className={busyId === b.id ? 'row-busy' : ''}>
                 <td className="mono">{b.code}</td>
                 <td>
-                  <div>{b.customer_name}</div>
+                  <Link to={`/admin/customers/${b.customer_id}`}>{b.customer_name}</Link>
                   <div className="muted small">{b.customer_email}</div>
                 </td>
                 <td>
@@ -91,6 +118,9 @@ export default function AdminBookings() {
                       <button className="btn btn-sm btn-ghost" title="No-show" onClick={() => setStatus(b, 'no_show')}>👻</button>
                       <button className="btn btn-sm btn-danger-ghost" title="Cancel" onClick={() => setStatus(b, 'cancelled')}>✕</button>
                     </>
+                  )}
+                  {b.status === 'pending_payment' && (
+                    <button className="btn btn-sm btn-danger-ghost" title="Cancel unpaid hold" onClick={() => setStatus(b, 'cancelled')}>✕</button>
                   )}
                 </td>
               </tr>
