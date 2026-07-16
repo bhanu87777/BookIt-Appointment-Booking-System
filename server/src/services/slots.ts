@@ -63,29 +63,29 @@ export async function computeSlots(
   const horizonEnd = new Date(now.getTime() + provider.booking_horizon_days * 24 * 60 * MIN);
   if (dayStart > horizonEnd) return { slots: [], provider, service };
 
-  const [windows, breaks, timeOff, bookings] = await Promise.all([
-    db.query(
-      'SELECT start_time, end_time FROM schedules WHERE provider_id = $1 AND weekday = $2 ORDER BY start_time',
-      [providerId, weekday]
-    ),
-    db.query(
-      'SELECT start_time, end_time FROM breaks WHERE provider_id = $1 AND weekday = $2',
-      [providerId, weekday]
-    ),
-    db.query(
-      'SELECT starts_at, ends_at FROM time_off WHERE provider_id = $1 AND starts_at < $3 AND ends_at > $2',
-      [providerId, dayStart, dayEnd]
-    ),
-    db.query(
-      // status list MUST match the bookings_no_overlap constraint's WHERE
-      // clause exactly — pending_payment holds its slot while being paid for
-      `SELECT starts_at, ends_at FROM bookings
-       WHERE provider_id = $1 AND status IN ('pending_payment','confirmed','completed')
-         AND starts_at < $3 AND ends_at > $2
-         AND ($4::int IS NULL OR id <> $4)`,
-      [providerId, dayStart, dayEnd, excludeBookingId ?? null]
-    ),
-  ]);
+  // sequential on purpose: `db` may be a single PoolClient (inside the booking
+  // transaction), and pg forbids concurrent queries on one client
+  const windows = await db.query(
+    'SELECT start_time, end_time FROM schedules WHERE provider_id = $1 AND weekday = $2 ORDER BY start_time',
+    [providerId, weekday]
+  );
+  const breaks = await db.query(
+    'SELECT start_time, end_time FROM breaks WHERE provider_id = $1 AND weekday = $2',
+    [providerId, weekday]
+  );
+  const timeOff = await db.query(
+    'SELECT starts_at, ends_at FROM time_off WHERE provider_id = $1 AND starts_at < $3 AND ends_at > $2',
+    [providerId, dayStart, dayEnd]
+  );
+  const bookings = await db.query(
+    // status list MUST match the bookings_no_overlap constraint's WHERE
+    // clause exactly — pending_payment holds its slot while being paid for
+    `SELECT starts_at, ends_at FROM bookings
+     WHERE provider_id = $1 AND status IN ('pending_payment','confirmed','completed')
+       AND starts_at < $3 AND ends_at > $2
+       AND ($4::int IS NULL OR id <> $4)`,
+    [providerId, dayStart, dayEnd, excludeBookingId ?? null]
+  );
 
   const blocked: Interval[] = [
     ...breaks.rows.map((b) => ({
